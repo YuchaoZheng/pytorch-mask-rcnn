@@ -62,6 +62,7 @@ COCO_MODEL_PATH = os.path.join(ROOT_DIR, "mask_rcnn_coco.pth")
 DEFAULT_LOGS_DIR = os.path.join(ROOT_DIR, "logs")
 DEFAULT_DATASET_YEAR = "2014"
 
+
 ############################################################
 #  Configurations
 ############################################################
@@ -215,6 +216,7 @@ class CocoDataset(utils.Dataset):
             print("... done unzipping")
         print("Will use annotations in " + annFile)
 
+    # 定义coco数据集的mask，重写了utils.py中的load_mask
     def load_mask(self, image_id):
         """Load instance masks for the given image.
 
@@ -229,6 +231,8 @@ class CocoDataset(utils.Dataset):
         """
         # If not a COCO image, delegate to parent class.
         image_info = self.image_info[image_id]
+        # image_info形式如：image_info {'id': 515729, 'height': 640,
+        # 'annotations': [{'area': 15830.728249999998, 'image_id': 515729, 'segmentation': [[6.61, 465.37, 37.72, 478.62, 103.39, 457.88, 138.53, 432.53, 177.13, 410.07, 260.08, 370.32, 242.22, 351.31, 217.45, 335.76, 150.63, 367.44, 102.24, 387.02, 60.76, 389.33, 25.05, 394.51, 0.0, 398.55]], 'id': 341974, 'iscrowd': 0, 'category_id': 90, 'bbox': [0.0, 335.76, 260.08, 142.86]}, {'area': 278531.17929999996, 'image_id': 515729, 'segmentation': [[33.25, 0.0, 63.17, 137.97, 73.14, 246.03, 83.12, 294.23, 98.08, 315.84, 78.13, 325.82, 3.32, 310.86, 1.66, 628.36, 478.0, 628.36, 477.09, 3.32]], 'id': 2156685, 'iscrowd': 0, 'category_id': 1, 'bbox': [1.66, 0.0, 476.34, 628.36]}], 'source': 'coco', 'width': 478, 'path': 'COCO_dataset/train2014/COCO_train2014_000000515729.jpg'}
         if image_info["source"] != "coco":
             return super(CocoDataset, self).load_mask(image_id)
 
@@ -241,6 +245,7 @@ class CocoDataset(utils.Dataset):
             class_id = self.map_source_class_id(
                 "coco.{}".format(annotation['category_id']))
             if class_id:
+                # 将图像的annotation转换到矩阵大小为height*width的mask中
                 m = self.annToMask(annotation, image_info["height"],
                                    image_info["width"])
                 # Some objects are so small that they're less than 1 pixel area
@@ -248,6 +253,7 @@ class CocoDataset(utils.Dataset):
                 if m.max() < 1:
                     continue
                 # Is it a crowd? If so, use a negative class ID.
+                # iscrowd确定图像中的实例是一个还是多个，iscrowd=1，则是多个，采用RLE的形式
                 if annotation['iscrowd']:
                     # Use negative class ID for crowds
                     class_id *= -1
@@ -442,6 +448,8 @@ if __name__ == '__main__':
             GPU_COUNT = 1
             IMAGES_PER_GPU = 1
             DETECTION_MIN_CONFIDENCE = 0
+
+
         config = InferenceConfig()
     config.display()
 
@@ -493,30 +501,31 @@ if __name__ == '__main__':
         # Training - Stage 1
         print("Training network heads")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=40,
-                    layers='heads')
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=40,
+                          layers='heads')
 
         # Training - Stage 2
         # Finetune layers from ResNet stage 4 and up
         print("Fine tune Resnet stage 4 and up")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE,
-                    epochs=120,
-                    layers='4+')
+                          learning_rate=config.LEARNING_RATE,
+                          epochs=120,
+                          layers='4+')
 
         # Training - Stage 3
         # Fine tune all layers
         print("Fine tune all layers")
         model.train_model(dataset_train, dataset_val,
-                    learning_rate=config.LEARNING_RATE / 10,
-                    epochs=160,
-                    layers='all')
+                          learning_rate=config.LEARNING_RATE / 10,
+                          epochs=160,
+                          layers='all')
 
     elif args.command == "evaluate":
         # Validation dataset
         dataset_val = CocoDataset()
-        coco = dataset_val.load_coco(args.dataset, "minival", year=args.year, return_coco=True, auto_download=args.download)
+        coco = dataset_val.load_coco(args.dataset, "minival", year=args.year, return_coco=True,
+                                     auto_download=args.download)
         dataset_val.prepare()
         print("Running COCO evaluation on {} images.".format(args.limit))
         evaluate_coco(model, dataset_val, coco, "bbox", limit=int(args.limit))

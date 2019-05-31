@@ -292,10 +292,12 @@ def resize_image(image, min_dim=None, max_dim=None, padding=False):
     scale = 1
 
     # Scale?
+    # 放大
     if min_dim:
         # Scale up but not down
         scale = max(1, min_dim / min(h, w))
     # Does it exceed max dim?
+    # 缩小
     if max_dim:
         image_max = max(h, w)
         if round(image_max * scale) > max_dim:
@@ -305,6 +307,8 @@ def resize_image(image, min_dim=None, max_dim=None, padding=False):
         image = scipy.misc.imresize(
             image, (round(h * scale), round(w * scale)))
     # Need padding?
+    # h, w均padding到max_dim
+    # window 应该改为 window = (top_pad, left_pad, h, w) ?
     if padding:
         # Get new height and width
         h, w = image.shape[:2]
@@ -408,6 +412,33 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
         value is 2 then generate anchors for every other feature map pixel.
     """
     # Get all combinations of scales and ratios
+    '''
+    import numpy as np
+    import matplotlib.pyplot as plt
+    %matplotlib inline
+    m, n = (5, 3)
+    x = np.linspace(0, 1, m)
+    y = np.linspace(0, 1, n)
+    X, Y = np.meshgrid(x,y)
+    
+    x
+    out:
+    array([ 0.  ,  0.25,  0.5 ,  0.75,  1.  ])
+    y
+    out:
+    array([ 0. ,  0.5,  1. ])
+    
+    X
+    out:
+    array([[ 0.  ,  0.25,  0.5 ,  0.75,  1.  ],
+           [ 0.  ,  0.25,  0.5 ,  0.75,  1.  ],
+           [ 0.  ,  0.25,  0.5 ,  0.75,  1.  ]])
+    Y
+    out:
+    array([[ 0. ,  0. ,  0. ,  0. ,  0. ],
+           [ 0.5,  0.5,  0.5,  0.5,  0.5],
+           [ 1. ,  1. ,  1. ,  1. ,  1. ]])
+    '''
     scales, ratios = np.meshgrid(np.array(scales), np.array(ratios))
     scales = scales.flatten()
     ratios = ratios.flatten()

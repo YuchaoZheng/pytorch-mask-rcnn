@@ -432,6 +432,8 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
 #  ROIAlign Layer
 ############################################################
 
+# 将feature map固定到对应的尺寸
+# TODO: image_shape的含义
 def pyramid_roi_align(inputs, pool_size, image_shape):
     """Implements ROI Pooling on multiple levels of the feature pyramid.
 
@@ -596,6 +598,8 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     target_deltas: [batch, TRAIN_ROIS_PER_IMAGE, NUM_CLASSES,
                     (dy, dx, log(dh), log(dw), class_id)]
                    Class-specific bbox refinments.
+
+    掩码裁剪为bbox边界并调整为神经网络输出大小。
     target_mask: [batch, TRAIN_ROIS_PER_IMAGE, height, width)
                  Masks cropped to bbox boundaries and resized to neural
                  network output size.
@@ -607,7 +611,6 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     gt_boxes = gt_boxes.squeeze(0)
     gt_masks = gt_masks.squeeze(0)
 
-    # 处理COCO的人群
     # Handle COCO crowds
     # A crowd box in COCO is a bounding box around several instances. Exclude
     # them from training. A crowd box is given a negative class ID.
@@ -964,6 +967,7 @@ class Classifier(nn.Module):
         self.pool_size = pool_size
         self.image_shape = image_shape
         self.num_classes = num_classes
+        # 变到1 * 1 * 1024
         self.conv1 = nn.Conv2d(self.depth, 1024, kernel_size=self.pool_size, stride=1)
         self.bn1 = nn.BatchNorm2d(1024, eps=0.001, momentum=0.01)
         self.conv2 = nn.Conv2d(1024, 1024, kernel_size=1, stride=1)
@@ -975,6 +979,7 @@ class Classifier(nn.Module):
 
         self.linear_bbox = nn.Linear(1024, num_classes * 4)
 
+    # x是对应的feature map
     def forward(self, x, rois):
         x = pyramid_roi_align([rois] + x, self.pool_size, self.image_shape)
         x = self.conv1(x)
@@ -1001,6 +1006,7 @@ class Mask(nn.Module):
         self.pool_size = pool_size
         self.image_shape = image_shape
         self.num_classes = num_classes
+        # padding会在多处使用到
         self.padding = SamePad2d(kernel_size=3, stride=1)
         self.conv1 = nn.Conv2d(self.depth, 256, kernel_size=3, stride=1)
         self.bn1 = nn.BatchNorm2d(256, eps=0.001)
@@ -1010,6 +1016,7 @@ class Mask(nn.Module):
         self.bn3 = nn.BatchNorm2d(256, eps=0.001)
         self.conv4 = nn.Conv2d(256, 256, kernel_size=3, stride=1)
         self.bn4 = nn.BatchNorm2d(256, eps=0.001)
+        # 逆卷积
         self.deconv = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
         self.conv5 = nn.Conv2d(256, num_classes, kernel_size=1, stride=1)
         self.sigmoid = nn.Sigmoid()
@@ -1040,6 +1047,8 @@ class Mask(nn.Module):
 ############################################################
 #  Loss Functions
 ############################################################
+
+# TODO: 如何实现一个roi区域对应一个roi区域
 
 def compute_rpn_class_loss(rpn_match, rpn_class_logits):
     """RPN anchor classifier loss.
@@ -1098,6 +1107,7 @@ def compute_rpn_bbox_loss(target_bbox, rpn_match, rpn_bbox):
     return loss
 
 
+# 计算class Loss
 def compute_mrcnn_class_loss(target_class_ids, pred_class_logits):
     """Loss for the classifier head of Mask RCNN.
 
@@ -1175,6 +1185,9 @@ def compute_mrcnn_mask_loss(target_masks, target_class_ids, pred_masks):
 
     return loss
 
+# target_class_ids: 每个ROI对应的类ID [batch, num_rois, height, width], class ID为0表示是背景类
+# mrcnn_mask: [batch, proposals, num_classes, height, width] propasal每个class对应一个H * W
+# target_mask: [batch, num_rois, height, width]
 
 def compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_class_ids, mrcnn_class_logits,
                    target_deltas, mrcnn_bbox, target_mask, mrcnn_mask):
@@ -1191,6 +1204,7 @@ def compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_
 #  Data Generator
 ############################################################
 
+# instance_count 分割的数目
 def load_image_gt(dataset, config, image_id, augment=False,
                   use_mini_mask=False):
     """Load and return ground truth data for an image (image, mask, bounding boxes).
@@ -1216,6 +1230,7 @@ def load_image_gt(dataset, config, image_id, augment=False,
     image = dataset.load_image(image_id)
     mask, class_ids = dataset.load_mask(image_id)
     shape = image.shape
+    # 将图片换一下尺寸
     image, window, scale, padding = utils.resize_image(
         image,
         min_dim=config.IMAGE_MIN_DIM,
@@ -1232,11 +1247,13 @@ def load_image_gt(dataset, config, image_id, augment=False,
     # Bounding boxes. Note that some boxes might be all zeros
     # if the corresponding mask got cropped out.
     # bbox: [num_instances, (y1, x1, y2, x2)]
+    # 根据mask提取出对应的boxes
     bbox = utils.extract_bboxes(mask)
 
     # Active classes
     # Different datasets have different classes, so track the
     # classes supported in the dataset of this image.
+    # 哪些class真正出现过
     active_class_ids = np.zeros([dataset.num_classes], dtype=np.int32)
     source_class_ids = dataset.source_class_ids[dataset.image_info[image_id]["source"]]
     active_class_ids[source_class_ids] = 1
@@ -1246,11 +1263,12 @@ def load_image_gt(dataset, config, image_id, augment=False,
         mask = utils.minimize_mask(bbox, mask, config.MINI_MASK_SHAPE)
 
     # Image meta data
+    # 将这些信息放到一起
     image_meta = compose_image_meta(image_id, shape, window, active_class_ids)
 
     return image, image_meta, class_ids, bbox, mask
 
-
+# 给定锚点和GT框，计算重叠并识别正锚和增量以优化它们以匹配其对应的GT框
 def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     """Given the anchors and GT boxes, compute overlaps and identify positive
     anchors and deltas to refine them to match their corresponding GT boxes.
@@ -1312,6 +1330,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
 
     # Subsample to balance positive and negative anchors
     # Don't let positives be more than half the anchors
+    # 不能让positives过多，如果过多的话，随机扔掉一些，就是将rpn_match置为0
     ids = np.where(rpn_match == 1)[0]
     extra = len(ids) - (config.RPN_TRAIN_ANCHORS_PER_IMAGE // 2)
     if extra > 0:
@@ -1322,6 +1341,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     ids = np.where(rpn_match == -1)[0]
     extra = len(ids) - (config.RPN_TRAIN_ANCHORS_PER_IMAGE -
                         np.sum(rpn_match == 1))
+    # negative的rpn_match置为0
     if extra > 0:
         # Rest the extra ones to neutral
         ids = np.random.choice(ids, extra, replace=False)
@@ -1334,6 +1354,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # TODO: use box_refinment() rather than duplicating the code here
     for i, a in zip(ids, anchors[ids]):
         # Closest gt box (it might have IoU < 0.7)
+        # 找和它IOU最大的gt_boxes
         gt = gt_boxes[anchor_iou_argmax[i]]
 
         # Convert coordinates to center plus width/height.
@@ -1474,6 +1495,7 @@ class MaskRCNN(nn.Module):
         self.loss_history = []
         self.val_loss_history = []
 
+    # 定义一些基本的模块
     def build(self, config):
         """Build Mask R-CNN architecture.
         """
@@ -1523,6 +1545,7 @@ class MaskRCNN(nn.Module):
 
         self.apply(set_bn_fix)
 
+    # weight的初始化
     def initialize_weights(self):
         """Initialize model weights.
         """
@@ -1643,6 +1666,7 @@ class MaskRCNN(nn.Module):
         molded_images, image_metas, windows = self.mold_inputs(images)
 
         # Convert images to torch tensor
+        # 图片从[N, h, w, 3] -> [N, 3, h, w]
         molded_images = torch.from_numpy(molded_images.transpose(0, 3, 1, 2)).float()
 
         # To GPU
@@ -1691,6 +1715,7 @@ class MaskRCNN(nn.Module):
             self.apply(set_bn_eval)
 
         # Feature extraction
+        # 对于图片的输入，获取对应的feature map的输出
         [p2_out, p3_out, p4_out, p5_out, p6_out] = self.fpn(molded_images)
 
         # Note that P6 is used in RPN, but not in the classifier heads.
@@ -1699,6 +1724,7 @@ class MaskRCNN(nn.Module):
 
         # Loop through pyramid layers
         layer_outputs = []  # list of lists
+        # append：压入的元素被当作list
         for p in rpn_feature_maps:
             layer_outputs.append(self.rpn(p))
 
@@ -1715,6 +1741,7 @@ class MaskRCNN(nn.Module):
         # and zero padded.
         proposal_count = self.config.POST_NMS_ROIS_TRAINING if mode == "training" \
             else self.config.POST_NMS_ROIS_INFERENCE
+        # 根据rpn网络提取出来的 bbox 进行边界框删选
         rpn_rois = proposal_layer([rpn_class, rpn_bbox],
                                   proposal_count=proposal_count,
                                   nms_threshold=self.config.RPN_NMS_THRESHOLD,
@@ -2036,6 +2063,7 @@ class MaskRCNN(nn.Module):
         Returns 3 Numpy matricies:
         molded_images: [N, h, w, 3]. Images resized and normalized.
         image_metas: [N, length of meta data]. Details about each image.
+        # 图像中具有原始图像的部分
         windows: [N, (y1, x1, y2, x2)]. The portion of the image that has the
             original image (padding excluded).
         """
@@ -2131,6 +2159,7 @@ class MaskRCNN(nn.Module):
 #  Data Formatting
 ############################################################
 
+# 将信息放到一起
 def compose_image_meta(image_id, image_shape, window, active_class_ids):
     """Takes attributes of an image and puts them in one 1D array. Use
     parse_image_meta() to parse the values back.
