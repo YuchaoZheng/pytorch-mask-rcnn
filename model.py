@@ -66,9 +66,19 @@ def printProgressBar(iteration, total, prefix='', suffix='', decimals=1, length=
 
 
 ############################################################
-#  Pytorch Utility Functions
+#  Pytorch Utility Functions(实用功能)
 ############################################################
 
+'''
+Find the unique elements of an array.
+
+>>> np.unique1d([1, 1, 2, 2, 3, 3])
+array([1, 2, 3])
+>>> a = np.array([[1, 1], [2, 3]])
+>>> np.unique1d(a)
+array([1, 2, 3])
+'''
+# TODO
 def unique1d(tensor):
     if tensor.size()[0] == 0 or tensor.size()[0] == 1:
         return tensor
@@ -80,13 +90,38 @@ def unique1d(tensor):
     unique_bool = torch.cat((first_element, unique_bool), dim=0)
     return tensor[unique_bool.data]
 
+# TODO
+'''
+>>> x = torch.randn(2, 3)
+>>> x
 
+ 0.5983 -0.0341  2.4918
+ 1.5981 -0.5265 -0.8735
+[torch.FloatTensor of size 2x3]
+
+>>> torch.cat((x, x, x), 0)
+
+ 0.5983 -0.0341  2.4918
+ 1.5981 -0.5265 -0.8735
+ 0.5983 -0.0341  2.4918
+ 1.5981 -0.5265 -0.8735
+ 0.5983 -0.0341  2.4918
+ 1.5981 -0.5265 -0.8735
+[torch.FloatTensor of size 6x3]
+
+>>> torch.cat((x, x, x), 1)
+
+ 0.5983 -0.0341  2.4918  0.5983 -0.0341  2.4918  0.5983 -0.0341  2.4918
+ 1.5981 -0.5265 -0.8735  1.5981 -0.5265 -0.8735  1.5981 -0.5265 -0.8735
+[torch.FloatTensor of size 2x9]
+'''
 def intersect1d(tensor1, tensor2):
     aux = torch.cat((tensor1, tensor2), dim=0)
     aux = aux.sort()[0]
     return aux[:-1][(aux[1:] == aux[:-1]).data]
 
 
+# 计算log2
 def log2(x):
     """Implementatin of Log2. Pytorch doesn't have a native implemenation."""
     ln2 = Variable(torch.log(torch.FloatTensor([2.0])), requires_grad=False)
@@ -94,8 +129,10 @@ def log2(x):
         ln2 = ln2.cuda()
     return torch.log(x) / ln2
 
-
+# 对于VALID，输出形状计算为ceil((W - kernel_size + 1) / S)
+# 对于SAME，输出形状计算为ceil(W / S)
 # convv2d(padding = 'SAME)
+# (W - kernel_size + 2 * padding) / S + 1，假设能够整除
 class SamePad2d(nn.Module):
     """Mimics tensorflow's 'SAME' padding.
     """
@@ -108,6 +145,7 @@ class SamePad2d(nn.Module):
     def forward(self, input):
         in_width = input.size()[2]
         in_height = input.size()[3]
+        # 正确的output shape
         out_width = math.ceil(float(in_width) / float(self.stride[0]))
         out_height = math.ceil(float(in_height) / float(self.stride[1]))
         pad_along_width = ((out_width - 1) * self.stride[0] +
@@ -128,7 +166,7 @@ class SamePad2d(nn.Module):
 #  FPN Graph
 ############################################################
 
-# 这个只是一层融合的样例，在下面具体实现了
+# 这个只是一层融合的样例，从上到下融合
 class TopDownLayer(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(TopDownLayer, self).__init__()
@@ -611,10 +649,12 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     gt_boxes = gt_boxes.squeeze(0)
     gt_masks = gt_masks.squeeze(0)
 
+    # Train过程对crowds忽略,
     # Handle COCO crowds
     # A crowd box in COCO is a bounding box around several instances. Exclude
     # them from training. A crowd box is given a negative class ID.
     if torch.nonzero(gt_class_ids < 0).size():
+        # crowd_ix表示crowds对应的MAX_GT_INSTANCES中的下标
         crowd_ix = torch.nonzero(gt_class_ids < 0)[:, 0]
         non_crowd_ix = torch.nonzero(gt_class_ids > 0)[:, 0]
         crowd_boxes = gt_boxes[crowd_ix.data, :]
@@ -624,6 +664,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         gt_masks = gt_masks[non_crowd_ix.data, :]
 
         # Compute overlaps with crowd boxes [anchors, crowds]
+        # 计算proposals与crowd boxes的IOU
         crowd_overlaps = bbox_overlaps(proposals, crowd_boxes)
         crowd_iou_max = torch.max(crowd_overlaps, dim=1)[0]
         no_crowd_bool = crowd_iou_max < 0.001
@@ -635,10 +676,37 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     # Compute overlaps matrix [proposals, gt_boxes]
     overlaps = bbox_overlaps(proposals, gt_boxes)
 
+    '''
+    >> a = torch.randn(4, 4)
+    >> a
+    
+    0.0692  0.3142  1.2513 -0.5428
+    0.9288  0.8552 -0.2073  0.6409
+    1.0695 -0.0101 -2.4507 -1.2230
+    0.7426 -0.7666  0.4862 -0.6628
+    torch.FloatTensor of size 4x4]
+    
+    >>> torch.max(a, 1)
+    (
+     1.2513
+     0.9288
+     1.0695
+     0.7426
+    [torch.FloatTensor of size 4x1]
+    ,
+     2
+     0
+     0
+     0
+    [torch.LongTensor of size 4x1]
+    )
+    '''
     # Determine postive and negative ROIs
+    # [0]表示值，[1]表示对应的下标
     roi_iou_max = torch.max(overlaps, dim=1)[0]
 
     # 1. Positive ROIs are those with >= 0.5 IoU with a GT box
+    # 那些是positive
     positive_roi_bool = roi_iou_max >= 0.5
 
     # Subsample ROIs. Aim for 33% positive
@@ -646,23 +714,29 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     if torch.nonzero(positive_roi_bool).size():
         positive_indices = torch.nonzero(positive_roi_bool)[:, 0]
 
+        # 每一个最多选择多少个ROI
         positive_count = int(config.TRAIN_ROIS_PER_IMAGE *
                              config.ROI_POSITIVE_RATIO)
         rand_idx = torch.randperm(positive_indices.size()[0])
         rand_idx = rand_idx[:positive_count]
         if config.GPU_COUNT:
             rand_idx = rand_idx.cuda()
+
+        # 更新positive_rois
         positive_indices = positive_indices[rand_idx]
         positive_count = positive_indices.size()[0]
         positive_rois = proposals[positive_indices.data, :]
 
         # Assign positive ROIs to GT boxes.
         positive_overlaps = overlaps[positive_indices.data, :]
+
+        # Positive ROI对应的target gt_boxes
         roi_gt_box_assignment = torch.max(positive_overlaps, dim=1)[1]
         roi_gt_boxes = gt_boxes[roi_gt_box_assignment.data, :]
         roi_gt_class_ids = gt_class_ids[roi_gt_box_assignment.data]
 
         # Compute bbox refinement for positive ROIs
+        # 计算Compute refinement needed to transform box to gt_box
         deltas = Variable(utils.box_refinement(positive_rois.data, roi_gt_boxes.data), requires_grad=False)
         std_dev = Variable(torch.from_numpy(config.BBOX_STD_DEV).float(), requires_grad=False)
         if config.GPU_COUNT:
@@ -673,6 +747,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         roi_masks = gt_masks[roi_gt_box_assignment.data, :, :]
 
         # Compute mask targets
+        # TODO
         boxes = positive_rois
         if config.USE_MINI_MASK:
             # Transform ROI corrdinates from normalized image space
@@ -696,14 +771,17 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
 
         # Threshold mask pixels at 0.5 to have GT masks be 0 or 1 to use with
         # binary cross entropy loss.
+        # 转化为0,1
         masks = torch.round(masks)
     else:
         positive_count = 0
 
     # 2. Negative ROIs are those with < 0.5 with every GT box. Skip crowds.
     negative_roi_bool = roi_iou_max < 0.5
+    # skip crowds
     negative_roi_bool = negative_roi_bool & no_crowd_bool
     # Negative ROIs. Add enough to maintain positive:negative ratio.
+    # 控制positive:negative比例
     if torch.nonzero(negative_roi_bool).size() and positive_count > 0:
         negative_indices = torch.nonzero(negative_roi_bool)[:, 0]
         r = 1.0 / config.ROI_POSITIVE_RATIO
@@ -1868,6 +1946,7 @@ class MaskRCNN(nn.Module):
         trainables_wo_bn = [param for name, param in self.named_parameters() if
                             param.requires_grad and not 'bn' in name]
         trainables_only_bn = [param for name, param in self.named_parameters() if param.requires_grad and 'bn' in name]
+        # 针对BN和不是BN采用两种不同的训练方法
         optimizer = optim.SGD([
             {'params': trainables_wo_bn, 'weight_decay': self.config.WEIGHT_DECAY},
             {'params': trainables_only_bn}
