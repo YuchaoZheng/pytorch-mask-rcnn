@@ -308,7 +308,6 @@ def resize_image(image, min_dim=None, max_dim=None, padding=False):
             image, (round(h * scale), round(w * scale)))
     # Need padding?
     # h, w均padding到max_dim
-    # window 应该改为 window = (top_pad, left_pad, h, w) ?
     if padding:
         # Get new height and width
         h, w = image.shape[:2]
@@ -448,6 +447,7 @@ def generate_anchors(scales, ratios, shape, feature_stride, anchor_stride):
     widths = scales * np.sqrt(ratios)
 
     # Enumerate shifts in feature space
+    # TODO: 乘以feature_stride是为了映射到原图的尺寸？
     shifts_y = np.arange(0, shape[0], anchor_stride) * feature_stride
     shifts_x = np.arange(0, shape[1], anchor_stride) * feature_stride
     shifts_x, shifts_y = np.meshgrid(shifts_x, shifts_y)
@@ -480,6 +480,21 @@ def generate_pyramid_anchors(scales, ratios, feature_shapes, feature_strides,
     """
     # Anchors
     # [anchor_count, (y1, x1, y2, x2)]
+    '''
+    utils.generate_pyramid_anchors(config.RPN_ANCHOR_SCALES,
+                                  config.RPN_ANCHOR_RATIOS,
+                                  config.BACKBONE_SHAPES,
+                                  config.BACKBONE_STRIDES,
+                                  config.RPN_ANCHOR_STRIDE)
+    config.RPN_ANCHOR_SCALES：(32, 64, 128, 256, 512)
+    RPN_ANCHOR_RATIOS：[0.5, 1, 2]
+    self.BACKBONE_SHAPES = np.array(
+            [[int(math.ceil(self.IMAGE_SHAPE[0] / stride)),
+              int(math.ceil(self.IMAGE_SHAPE[1] / stride))]
+             for stride in self.BACKBONE_STRIDES])
+    BACKBONE_STRIDES = [4, 8, 16, 32, 64]
+    RPN_ANCHOR_STRIDE = 1
+    '''
     anchors = []
     for i in range(len(scales)):
         anchors.append(generate_anchors(scales[i], ratios, feature_shapes[i],

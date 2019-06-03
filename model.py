@@ -78,19 +78,22 @@ array([1, 2, 3])
 >>> np.unique1d(a)
 array([1, 2, 3])
 '''
-# TODO
+
+# 传入的tensor shape是(N, 1)
 def unique1d(tensor):
     if tensor.size()[0] == 0 or tensor.size()[0] == 1:
         return tensor
     tensor = tensor.sort()[0]
+    # 判断哪几个是重复的
     unique_bool = tensor[1:] != tensor[:-1]
+    # 第一个是需要保留的
     first_element = Variable(torch.ByteTensor([True]), requires_grad=False)
     if tensor.is_cuda:
         first_element = first_element.cuda()
     unique_bool = torch.cat((first_element, unique_bool), dim=0)
     return tensor[unique_bool.data]
 
-# TODO
+
 '''
 >>> x = torch.randn(2, 3)
 >>> x
@@ -115,6 +118,12 @@ def unique1d(tensor):
  1.5981 -0.5265 -0.8735  1.5981 -0.5265 -0.8735  1.5981 -0.5265 -0.8735
 [torch.FloatTensor of size 2x9]
 '''
+'''
+>>> np.intersect1d([1, 3, 4, 3], [3, 1, 2, 1])
+array([1, 3])
+找到两个数据集的交集
+'''
+# tensor1和tensor2都是一维
 def intersect1d(tensor1, tensor2):
     aux = torch.cat((tensor1, tensor2), dim=0)
     aux = aux.sort()[0]
@@ -128,6 +137,7 @@ def log2(x):
     if x.is_cuda:
         ln2 = ln2.cuda()
     return torch.log(x) / ln2
+
 
 # 对于VALID，输出形状计算为ceil((W - kernel_size + 1) / S)
 # 对于SAME，输出形状计算为ceil(W / S)
@@ -342,6 +352,7 @@ class ResNet(nn.Module):
 ############################################################
 
 # 进行坐标的调整
+# 先求出中心坐标，然后更新中心坐标，再更新H、W->求出新的boxes的左上角和右下角坐标
 def apply_box_deltas(boxes, deltas):
     """Applies the given deltas to the given boxes.
     boxes: [N, 4] where each row is y1, x1, y2, x2
@@ -366,12 +377,17 @@ def apply_box_deltas(boxes, deltas):
     return result
 
 
+# 看到这里
 # 对边界框进行裁剪，使得都在原来的图片内
 def clip_boxes(boxes, window):
     """
     boxes: [N, 4] each col is y1, x1, y2, x2
     window: [4] in the form y1, x1, y2, x2
     """
+    '''
+    torch.clamp(input, min, max, out=None) → Tensor
+    将输入input张量每个元素的夹紧到区间 [min,max]，并返回结果到一个新张量。
+    '''
     boxes = torch.stack( \
         [boxes[:, 0].clamp(float(window[0]), float(window[2])),
          boxes[:, 1].clamp(float(window[1]), float(window[3])),
@@ -414,11 +430,10 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
     inputs[0] = inputs[0].squeeze(0)
     inputs[1] = inputs[1].squeeze(0)
 
-    # Box Scores. Use the foreground class confidence. [Batch, num_rois, 1]
     # 从[num_rois, (bg prob, fg prob)]提取出前景的分数
     scores = inputs[0][:, 1]
 
-    # Box deltas [batch, num_rois, 4]
+    # Box deltas [num_rois, 4]
     deltas = inputs[1]
     std_dev = Variable(torch.from_numpy(np.reshape(config.RPN_BBOX_STD_DEV, [1, 4])).float(), requires_grad=False)
     if config.GPU_COUNT:
@@ -430,6 +445,12 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
     # 最多选取多少个框
     pre_nms_limit = min(6000, anchors.size()[0])
     # 降序排序
+    """
+    torch.sort(input, dim=None, descending=False, out=None) -> (Tensor, LongTensor)
+    对输入张量input沿着指定维按升序排序。如果不给定dim，则默认为输入的最后一维。如果指定参数descending为True，则按降序排序
+
+    返回元组 (sorted_tensor, sorted_indices) ， sorted_indices 为原始输入中的下标。
+    """
     scores, order = scores.sort(descending=True)
     order = order[:pre_nms_limit]
     scores = scores[:pre_nms_limit]
@@ -438,9 +459,13 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
 
     # Apply deltas to anchors to get refined anchors.
     # [batch, N, (y1, x1, y2, x2)]
+
+    # 对anchors进行调整
     boxes = apply_box_deltas(anchors, deltas)
 
     # Clip to image boundaries. [batch, N, (y1, x1, y2, x2)]
+    # 对anchor转化之后的boxes进行边界限制，不超过原来image的size
+    # 这时候转化为了原image的尺寸
     height, width = config.IMAGE_SHAPE[:2]
     window = np.array([0, 0, height, width]).astype(np.float32)
     boxes = clip_boxes(boxes, window)
@@ -450,6 +475,8 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
     # for small objects, so we're skipping it.
 
     # Non-max suppression
+    # torch.cat((boxes, scores.unsqueeze(1)), 1) 组合成[anchors, (y1, x1, y2, x2, score)]
+    # 返回合适的anchors的下标
     keep = nms(torch.cat((boxes, scores.unsqueeze(1)), 1).data, nms_threshold)
     keep = keep[:proposal_count]
     boxes = boxes[keep, :]
@@ -471,7 +498,7 @@ def proposal_layer(inputs, proposal_count, nms_threshold, anchors, config=None):
 ############################################################
 
 # 将feature map固定到对应的尺寸
-# TODO: image_shape的含义
+# TODO: image_shape的含义 -> 求出面积
 def pyramid_roi_align(inputs, pool_size, image_shape):
     """Implements ROI Pooling on multiple levels of the feature pyramid.
 
@@ -486,7 +513,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
                     Each is [batch, channels, height, width]
 
     Output:
-    Pooled regions in the shape: [num_boxes, height, width, channels].
+    Pooled regions in the shape: [num_boxes, pool_size_height, pool_size_width, channels].
     The width and height are those specific in the pool_shape in the layer
     constructor.
     """
@@ -503,6 +530,17 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
     feature_maps = inputs[1:]
 
     # Assign each ROI to a level in the pyramid based on the ROI area.
+    '''
+    torch.chunk
+    torch.chunk(tensor, chunks, dim=0)
+    在给定维度(轴)上将输入张量进行分块儿。
+    
+    参数:
+    
+    tensor (Tensor) – 待分块的输入张量
+    chunks (int) – 分块的个数
+    dim (int) – 沿着此维度进行分块
+    '''
     # 根据ROI区域将每个ROI分配到金字塔中的级别
     y1, x1, y2, x2 = boxes.chunk(4, dim=1)
     h = y2 - y1
@@ -514,6 +552,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
     image_area = Variable(torch.FloatTensor([float(image_shape[0] * image_shape[1])]), requires_grad=False)
     if boxes.is_cuda:
         image_area = image_area.cuda()
+    # TODO: 应该改成4 + log2(torch.sqrt(h * w) / torch.sqrt(image_area))
     roi_level = 4 + log2(torch.sqrt(h * w) / (224.0 / torch.sqrt(image_area)))
     roi_level = roi_level.round().int()
     roi_level = roi_level.clamp(2, 5)
@@ -526,12 +565,14 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
         if not ix.any():
             continue
         ix = torch.nonzero(ix)[:, 0]
+        # 对应level的boxes
         level_boxes = boxes[ix.data, :]
 
         # Keep track of which box is mapped to which level
         box_to_level.append(ix.data)
 
         # Stop gradient propogation to ROI proposals
+        # 停止梯度传播到boxes
         level_boxes = level_boxes.detach()
 
         # Crop and Resize
@@ -558,6 +599,7 @@ def pyramid_roi_align(inputs, pool_size, image_shape):
     box_to_level = torch.cat(box_to_level, dim=0)
 
     # Rearrange pooled features to match the order of the original boxes
+    # 还原回原来的顺序
     _, box_to_level = torch.sort(box_to_level)
     pooled = pooled[box_to_level, :, :]
 
@@ -578,6 +620,8 @@ tensor (Tensor) – 待分块的输入张量
 chunks (int) – 分块的个数
 dim (int) – 沿着此维度进行分块
 '''
+
+
 # 计算两个set的boxes的IOU
 def bbox_overlaps(boxes1, boxes2):
     """Computes IoU overlaps between two sets of boxes.
@@ -616,6 +660,9 @@ def bbox_overlaps(boxes1, boxes2):
     return overlaps
 
 
+# 对选出的proposals进行回归计算？
+# 得到更加准确的rois以及deltas以及mask，标记为target
+# 在train的时候调用
 def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     """Subsamples proposals and generates target box refinment, class_ids,
     and masks for each.
@@ -687,19 +734,10 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
     torch.FloatTensor of size 4x4]
     
     >>> torch.max(a, 1)
-    (
-     1.2513
-     0.9288
-     1.0695
-     0.7426
+    (1.2513 0.9288 1.0695 0.7426
     [torch.FloatTensor of size 4x1]
-    ,
-     2
-     0
-     0
-     0
-    [torch.LongTensor of size 4x1]
-    )
+    , 2 0 0 0
+    [torch.LongTensor of size 4x1])
     '''
     # Determine postive and negative ROIs
     # [0]表示值，[1]表示对应的下标
@@ -717,6 +755,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         # 每一个最多选择多少个ROI
         positive_count = int(config.TRAIN_ROIS_PER_IMAGE *
                              config.ROI_POSITIVE_RATIO)
+        # 打乱下标
         rand_idx = torch.randperm(positive_indices.size()[0])
         rand_idx = rand_idx[:positive_count]
         if config.GPU_COUNT:
@@ -730,13 +769,14 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         # Assign positive ROIs to GT boxes.
         positive_overlaps = overlaps[positive_indices.data, :]
 
-        # Positive ROI对应的target gt_boxes
+        # Positive ROI对应的target gt_boxes，找出每个positive_rois对应的gt_box
         roi_gt_box_assignment = torch.max(positive_overlaps, dim=1)[1]
         roi_gt_boxes = gt_boxes[roi_gt_box_assignment.data, :]
         roi_gt_class_ids = gt_class_ids[roi_gt_box_assignment.data]
 
         # Compute bbox refinement for positive ROIs
         # 计算Compute refinement needed to transform box to gt_box
+        # TODO：知道为啥这样boxes回归 -> 目的求出准确的[dy, dx, dh, dw]，为之后计算loss做准备
         deltas = Variable(utils.box_refinement(positive_rois.data, roi_gt_boxes.data), requires_grad=False)
         std_dev = Variable(torch.from_numpy(config.BBOX_STD_DEV).float(), requires_grad=False)
         if config.GPU_COUNT:
@@ -747,7 +787,6 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         roi_masks = gt_masks[roi_gt_box_assignment.data, :, :]
 
         # Compute mask targets
-        # TODO
         boxes = positive_rois
         if config.USE_MINI_MASK:
             # Transform ROI corrdinates from normalized image space
@@ -764,6 +803,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
         box_ids = Variable(torch.arange(roi_masks.size()[0]), requires_grad=False).int()
         if config.GPU_COUNT:
             box_ids = box_ids.cuda()
+        # 根绝boxes得到mask
         masks = Variable(
             CropAndResizeFunction(config.MASK_SHAPE[0], config.MASK_SHAPE[1], 0)(roi_masks.unsqueeze(1), boxes,
                                                                                  box_ids).data, requires_grad=False)
@@ -798,6 +838,7 @@ def detection_target_layer(proposals, gt_class_ids, gt_boxes, gt_masks, config):
 
     # Append negative ROIs and pad bbox deltas and masks that
     # are not used for negative ROIs with zeros.
+    # 将postive 和 negative ROIs相结合，并返回
     if positive_count > 0 and negative_count > 0:
         rois = torch.cat((positive_rois, negative_rois), dim=0)
         zeros = Variable(torch.zeros(negative_count), requires_grad=False).int()
@@ -858,7 +899,8 @@ def clip_to_window(window, boxes):
 
     return boxes
 
-
+# 提炼检测
+# 在inference的时候调用
 def refine_detections(rois, probs, deltas, window, config):
     """Refine classified proposals and filter overlaps and return final
     detections.
@@ -875,13 +917,16 @@ def refine_detections(rois, probs, deltas, window, config):
     """
 
     # Class IDs per ROI
+    # 对于每一个ROI计算出它对应的类
     _, class_ids = torch.max(probs, dim=1)
 
     # Class probability of the top class of each ROI
     # Class-specific bounding box deltas
+    # class_ids.size()对应的shape应该为(N, 1)
     idx = torch.arange(class_ids.size()[0]).long()
     if config.GPU_COUNT:
         idx = idx.cuda()
+    # 每个idx都有其对应的class_ids，取出每个idx对应的类的score
     class_scores = probs[idx, class_ids.data]
     deltas_specific = deltas[idx, class_ids.data]
 
@@ -890,9 +935,11 @@ def refine_detections(rois, probs, deltas, window, config):
     std_dev = Variable(torch.from_numpy(np.reshape(config.RPN_BBOX_STD_DEV, [1, 4])).float(), requires_grad=False)
     if config.GPU_COUNT:
         std_dev = std_dev.cuda()
+    # 对rois进行边界框调整
     refined_rois = apply_box_deltas(rois, deltas_specific * std_dev)
 
     # Convert coordiates to image domain
+    # 原来的roi坐标不是针对image domain的
     height, width = config.IMAGE_SHAPE[:2]
     scale = Variable(torch.from_numpy(np.array([height, width, height, width])).float(), requires_grad=False)
     if config.GPU_COUNT:
@@ -903,11 +950,13 @@ def refine_detections(rois, probs, deltas, window, config):
     refined_rois = clip_to_window(window, refined_rois)
 
     # Round and cast to int since we're deadling with pixels now
+    # TODO: why? ->  经过rois边界框调整之后可能位置不是整数
     refined_rois = torch.round(refined_rois)
 
     # TODO: Filter out boxes with zero area
 
     # Filter out background boxes
+    # 把背景框删掉
     keep_bool = class_ids > 0
 
     # Filter out low confidence boxes
@@ -920,16 +969,21 @@ def refine_detections(rois, probs, deltas, window, config):
     pre_nms_scores = class_scores[keep.data]
     pre_nms_rois = refined_rois[keep.data]
 
+    # unique1d(pre_nms_class_ids)：对每个class只处理一次
     for i, class_id in enumerate(unique1d(pre_nms_class_ids)):
         # Pick detections of this class
+        # 找出pre_nms_class_ids中class等于class_id的下标
         ixs = torch.nonzero(pre_nms_class_ids == class_id)[:, 0]
 
         # Sort
+        # 按分数从高到低排序
         ix_rois = pre_nms_rois[ixs.data]
         ix_scores = pre_nms_scores[ixs]
         ix_scores, order = ix_scores.sort(descending=True)
         ix_rois = ix_rois[order.data, :]
 
+        # nms每次都把class相同的边界框进行操作
+        # 当前这个class需要保留那些ROI
         class_keep = nms(torch.cat((ix_rois, ix_scores.unsqueeze(1)), dim=1).data, config.DETECTION_NMS_THRESHOLD)
 
         # Map indicies
@@ -939,6 +993,7 @@ def refine_detections(rois, probs, deltas, window, config):
             nms_keep = class_keep
         else:
             nms_keep = unique1d(torch.cat((nms_keep, class_keep)))
+    # 找到keep和nms_keep的交集
     keep = intersect1d(keep, nms_keep)
 
     # Keep top detections
@@ -954,7 +1009,7 @@ def refine_detections(rois, probs, deltas, window, config):
 
     return result
 
-
+# 在inference的时候调用
 def detection_layer(config, rois, mrcnn_class, mrcnn_bbox, image_meta):
     """Takes classified proposal boxes and their bounding box deltas and
     returns the final detection boxes.
@@ -981,9 +1036,11 @@ class RPN(nn.Module):
     """Builds the model of Region Proposal Network.
 
     anchors_per_location: number of anchors per pixel in the feature map
-    feature map中每个像素的锚点数
+    feature map中每个像素点的选取的锚的数目
+
     anchor_stride: Controls the density of anchors. Typically 1 (anchors for
                    every pixel in the feature map), or 2 (every other pixel).
+    基本上默认是1
 
     Returns:
         rpn_logits: [batch, H, W, 2] Anchor classifier logits (before softmax)
@@ -1006,6 +1063,7 @@ class RPN(nn.Module):
         self.softmax = nn.Softmax(dim=2)
         self.conv_bbox = nn.Conv2d(512, 4 * anchors_per_location, kernel_size=1, stride=1)
 
+    # x表示feature map,每次会传入不同的feature map然后提取anchors
     def forward(self, x):
         # Shared convolutional base of the RPN
         x = self.relu(self.conv_shared(self.padding(x)))
@@ -1045,7 +1103,7 @@ class Classifier(nn.Module):
         self.pool_size = pool_size
         self.image_shape = image_shape
         self.num_classes = num_classes
-        # 变到1 * 1 * 1024
+        # 变到1 * 1 * 1024, kernel_size = pool_size
         self.conv1 = nn.Conv2d(self.depth, 1024, kernel_size=self.pool_size, stride=1)
         self.bn1 = nn.BatchNorm2d(1024, eps=0.001, momentum=0.01)
         self.conv2 = nn.Conv2d(1024, 1024, kernel_size=1, stride=1)
@@ -1057,7 +1115,7 @@ class Classifier(nn.Module):
 
         self.linear_bbox = nn.Linear(1024, num_classes * 4)
 
-    # x是对应的feature map
+    # x是对应的feature map，有很多层feature map
     def forward(self, x, rois):
         x = pyramid_roi_align([rois] + x, self.pool_size, self.image_shape)
         x = self.conv1(x)
@@ -1094,7 +1152,7 @@ class Mask(nn.Module):
         self.bn3 = nn.BatchNorm2d(256, eps=0.001)
         self.conv4 = nn.Conv2d(256, 256, kernel_size=3, stride=1)
         self.bn4 = nn.BatchNorm2d(256, eps=0.001)
-        # 逆卷积
+        # 逆卷积，将shape从14 * 14 变为 28 * 28或者从7 * 7变为 14 * 14
         self.deconv = nn.ConvTranspose2d(256, 256, kernel_size=2, stride=2)
         self.conv5 = nn.Conv2d(256, num_classes, kernel_size=1, stride=1)
         self.sigmoid = nn.Sigmoid()
@@ -1125,8 +1183,6 @@ class Mask(nn.Module):
 ############################################################
 #  Loss Functions
 ############################################################
-
-# TODO: 如何实现一个roi区域对应一个roi区域
 
 def compute_rpn_class_loss(rpn_match, rpn_class_logits):
     """RPN anchor classifier loss.
@@ -1263,10 +1319,14 @@ def compute_mrcnn_mask_loss(target_masks, target_class_ids, pred_masks):
 
     return loss
 
+
 # target_class_ids: 每个ROI对应的类ID [batch, num_rois, height, width], class ID为0表示是背景类
 # mrcnn_mask: [batch, proposals, num_classes, height, width] propasal每个class对应一个H * W
 # target_mask: [batch, num_rois, height, width]
 
+
+# 正确的答案：rpn_match，rpn_bbox，gt_class_ids，gt_boxes，gt_masks,target_deltas,target_mask
+# mrcnn_bbox,mrcnn_mask,rpn_pred_bbox,target_class_ids是根据conv计算出来的
 def compute_losses(rpn_match, rpn_bbox, rpn_class_logits, rpn_pred_bbox, target_class_ids, mrcnn_class_logits,
                    target_deltas, mrcnn_bbox, target_mask, mrcnn_mask):
     rpn_class_loss = compute_rpn_class_loss(rpn_match, rpn_class_logits)
@@ -1346,7 +1406,7 @@ def load_image_gt(dataset, config, image_id, augment=False,
 
     return image, image_meta, class_ids, bbox, mask
 
-# 给定锚点和GT框，计算重叠并识别正锚和增量以优化它们以匹配其对应的GT框
+# 计算出准确的rpn_match和rpn_boxes，为后面的loss计算作准备
 def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     """Given the anchors and GT boxes, compute overlaps and identify positive
     anchors and deltas to refine them to match their corresponding GT boxes.
@@ -1363,6 +1423,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # RPN Match: 1 = positive anchor, -1 = negative anchor, 0 = neutral
     rpn_match = np.zeros([anchors.shape[0]], dtype=np.int32)
     # RPN bounding boxes: [max anchors per image, (dy, dx, log(dh), log(dw))]
+    # TODO:为啥是config.RPN_TRAIN_ANCHORS_PER_IMAGE而不是anchors.shape[0] -> 因为rpn_bbox是针对postivate anchors
     rpn_bbox = np.zeros((config.RPN_TRAIN_ANCHORS_PER_IMAGE, 4))
 
     # Handle COCO crowds
@@ -1398,10 +1459,12 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
     # matched to them. Skip boxes in crowd areas.
     anchor_iou_argmax = np.argmax(overlaps, axis=1)
     anchor_iou_max = overlaps[np.arange(overlaps.shape[0]), anchor_iou_argmax]
+    # 背景类是指跟gt_boxes的IOU小于0.3
     rpn_match[(anchor_iou_max < 0.3) & (no_crowd_bool)] = -1
     # 2. Set an anchor for each GT box (regardless of IoU value).
     # TODO: If multiple anchors have the same IoU match all of them
     gt_iou_argmax = np.argmax(overlaps, axis=0)
+    # 每个gt_boxes都会有一个最符合的anchor，设置这个最符合的anchor的分类为前景
     rpn_match[gt_iou_argmax] = 1
     # 3. Set anchors with high overlap as positive.
     rpn_match[anchor_iou_max >= 0.7] = 1
@@ -1427,6 +1490,7 @@ def build_rpn_targets(image_shape, anchors, gt_class_ids, gt_boxes, config):
 
     # For positive anchors, compute shift and scale needed to transform them
     # to match the corresponding GT boxes.
+    # 对于positive anchors，计算bbox的偏移和缩放
     ids = np.where(rpn_match == 1)[0]
     ix = 0  # index into rpn_bbox
     # TODO: use box_refinment() rather than duplicating the code here
@@ -1525,6 +1589,7 @@ class Dataset(torch.utils.data.Dataset):
                                                 gt_class_ids, gt_boxes, self.config)
 
         # If more instances than fits in the array, sub-sample from them.
+        # 如果超过最大数量，随机弄掉几个
         if gt_boxes.shape[0] > self.config.MAX_GT_INSTANCES:
             ids = np.random.choice(
                 np.arange(gt_boxes.shape[0]), self.config.MAX_GT_INSTANCES, replace=False)
@@ -1741,6 +1806,13 @@ class MaskRCNN(nn.Module):
         """
 
         # Mold inputs to format expected by the neural network
+        '''
+        molded_images: [N, h, w, 3]. Images resized and normalized.
+        image_metas: [N, length of meta data]. Details about each image.
+        # 图像中具有原始图像的部分
+        windows: [N, (y1, x1, y2, x2)]. The portion of the image that has the
+            original image (padding excluded).
+        '''
         molded_images, image_metas, windows = self.mold_inputs(images)
 
         # Convert images to torch tensor
@@ -1810,6 +1882,7 @@ class MaskRCNN(nn.Module):
         # Convert from list of lists of level outputs to list of lists
         # of outputs across levels.
         # e.g. [[a1, b1, c1], [a2, b2, c2]] => [[a1, a2], [b1, b2], [c1, c2]]
+        # 把所有的rpn_class_logits放到一个list中
         outputs = list(zip(*layer_outputs))
         outputs = [torch.cat(list(o), dim=1) for o in outputs]
         rpn_class_logits, rpn_class, rpn_bbox = outputs
@@ -1819,7 +1892,7 @@ class MaskRCNN(nn.Module):
         # and zero padded.
         proposal_count = self.config.POST_NMS_ROIS_TRAINING if mode == "training" \
             else self.config.POST_NMS_ROIS_INFERENCE
-        # 根据rpn网络提取出来的 bbox 进行边界框删选
+        # 利用rnp网络提取出来的rpn_bbox对anchors进行回归
         rpn_rois = proposal_layer([rpn_class, rpn_bbox],
                                   proposal_count=proposal_count,
                                   nms_threshold=self.config.RPN_NMS_THRESHOLD,
@@ -1865,6 +1938,7 @@ class MaskRCNN(nn.Module):
             # Normalize coordinates
             h, w = self.config.IMAGE_SHAPE[:2]
             scale = Variable(torch.from_numpy(np.array([h, w, h, w])).float(), requires_grad=False)
+            # TODO: why 除以 scale，预测的都是相对比列 -> 更加好回归
             if self.config.GPU_COUNT:
                 scale = scale.cuda()
             gt_boxes = gt_boxes / scale
@@ -1873,6 +1947,8 @@ class MaskRCNN(nn.Module):
             # Subsamples proposals and generates target outputs for training
             # Note that proposal class IDs, gt_boxes, and gt_masks are zero
             # padded. Equally, returned rois and targets are zero padded.
+            # target_deltas表示选出来的rpn_rois对应应该回归的gt_boxes的数值(例如正确的(dy, dx, log(dh), log(dw), class_id))
+            # 为了下面求compute_mrcnn_bbox_loss做铺垫
             rois, target_class_ids, target_deltas, target_mask = \
                 detection_target_layer(rpn_rois, gt_class_ids, gt_boxes, gt_masks, self.config)
 
@@ -2142,7 +2218,7 @@ class MaskRCNN(nn.Module):
         Returns 3 Numpy matricies:
         molded_images: [N, h, w, 3]. Images resized and normalized.
         image_metas: [N, length of meta data]. Details about each image.
-        # 图像中具有原始图像的部分
+        # 图像中具有原始图像的部分（不包括填充）
         windows: [N, (y1, x1, y2, x2)]. The portion of the image that has the
             original image (padding excluded).
         """
